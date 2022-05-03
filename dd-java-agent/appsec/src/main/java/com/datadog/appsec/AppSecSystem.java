@@ -1,9 +1,14 @@
 package com.datadog.appsec;
 
+import static datadog.trace.util.AgentThreadFactory.newAgentThread;
+
 import com.datadog.appsec.config.AppSecConfigServiceImpl;
+import com.datadog.appsec.dependency.DependencyService;
+import com.datadog.appsec.dependency.DependencyServiceImpl;
 import com.datadog.appsec.event.EventDispatcher;
 import com.datadog.appsec.gateway.GatewayBridge;
 import com.datadog.appsec.gateway.RateLimiter;
+import com.datadog.appsec.telemetry.TelemetryRunnable;
 import com.datadog.appsec.util.AbortStartupException;
 import com.datadog.appsec.util.StandardizedLogging;
 import datadog.communication.ddagent.SharedCommunicationObjects;
@@ -16,6 +21,7 @@ import datadog.trace.api.gateway.SubscriptionService;
 import datadog.trace.api.time.SystemTimeSource;
 import datadog.trace.util.AgentThreadFactory;
 import datadog.trace.util.Strings;
+import java.lang.instrument.Instrumentation;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -28,9 +34,12 @@ public class AppSecSystem {
   private static final Map<String, String> STARTED_MODULES_INFO = new HashMap<String, String>();
   private static AppSecConfigServiceImpl APP_SEC_CONFIG_SERVICE;
 
-  public static void start(SubscriptionService gw, SharedCommunicationObjects sco) {
+  private static Thread TELEMETRY_THREAD;
+
+  public static void start(
+      Instrumentation instrumentation, SubscriptionService gw, SharedCommunicationObjects sco) {
     try {
-      doStart(gw, sco);
+      doStart(instrumentation, gw, sco);
     } catch (AbortStartupException ase) {
       throw ase;
     } catch (RuntimeException | Error e) {
@@ -39,13 +48,14 @@ public class AppSecSystem {
     }
   }
 
-  private static void doStart(SubscriptionService gw, SharedCommunicationObjects sco) {
+  private static void doStart(
+      Instrumentation instrumentation, SubscriptionService gw, SharedCommunicationObjects sco) {
     final Config config = Config.get();
     if (!config.isAppSecEnabled()) {
       log.debug("AppSec: disabled");
       return;
     }
-    log.debug("AppSec has started");
+    log.debug("AppSec is starting");
 
     //  TODO: FleetService should be shared with other components
     FleetService fleetService =
@@ -57,6 +67,20 @@ public class AppSecSystem {
     APP_SEC_CONFIG_SERVICE = new AppSecConfigServiceImpl(config, fleetService);
     // no point initializing fleet service, as it will receive no notifications
     APP_SEC_CONFIG_SERVICE.init(false);
+
+    // TODO: Telemetry should be moved out of appsec
+    DependencyService dependencyService;
+    if (instrumentation != null && config.isAppSecDependencies()) {
+      DependencyServiceImpl impl = new DependencyServiceImpl();
+      impl.installOn(instrumentation);
+      dependencyService = impl;
+    } else {
+      dependencyService = DependencyService.NOOP;
+    }
+    TELEMETRY_THREAD =
+        newAgentThread(
+            AgentThreadFactory.AgentThread.TELEMETRY, new TelemetryRunnable(dependencyService));
+    TELEMETRY_THREAD.start();
 
     EventDispatcher eventDispatcher = new EventDispatcher();
     sco.createRemaining(config);
@@ -96,6 +120,7 @@ public class AppSecSystem {
     }
 
     APP_SEC_CONFIG_SERVICE.close();
+    TELEMETRY_THREAD.interrupt();
   }
 
   private static void loadModules(EventDispatcher eventDispatcher) {
