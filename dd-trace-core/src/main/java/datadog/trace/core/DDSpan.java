@@ -408,14 +408,14 @@ public class DDSpan
   @Override
   public final DDSpan setTag(final String tag, final String value) {
     context.setTag(tag, value);
-    log.debug("setTag: {}", this);
+    log.debug("setTag[{}]: {}", tag, this);
     return this;
   }
 
   @Override
   public final DDSpan setTag(final String tag, final boolean value) {
     context.setTag(tag, value);
-    log.debug("setTag: {}", this);
+    log.debug("setTag[{}]: {}", tag, this);
     return this;
   }
 
@@ -427,28 +427,28 @@ public class DDSpan
       context.setHttpStatusCode((short) value);
     }
     context.setTag(tag, value);
-    log.debug("setTag: {}", this);
+    log.debug("setTag[{}]: {}", tag, this);
     return this;
   }
 
   @Override
   public DDSpan setTag(final String tag, final long value) {
     context.setTag(tag, value);
-    log.debug("setTag: {}", this);
+    log.debug("setTag[{}]: {}", tag, this);
     return this;
   }
 
   @Override
   public DDSpan setTag(final String tag, final double value) {
     context.setTag(tag, value);
-    log.debug("setTag: {}", this);
+    log.debug("setTag[{}]: {}", tag, this);
     return this;
   }
 
   @Override
   public DDSpan setTag(final String tag, final Number value) {
     context.setTag(tag, value);
-    log.debug("setTag: {}", this);
+    log.debug("setTag[{}]: {}", tag, this);
     return this;
   }
 
@@ -559,6 +559,7 @@ public class DDSpan
   @Override
   public final DDSpan setResourceName(final CharSequence resourceName, byte priority) {
     context.setResourceName(resourceName, priority);
+    log.debug("setResourceName: {} {} {}", resourceName, priority, this, new RuntimeException("log"));
     return this;
   }
 
