@@ -1,14 +1,11 @@
 package com.datadog.appsec;
 
-import static datadog.trace.util.AgentThreadFactory.newAgentThread;
-
 import com.datadog.appsec.config.AppSecConfigServiceImpl;
-import com.datadog.appsec.dependency.DependencyService;
+import com.datadog.appsec.dependency.DependencyPeriodicAction;
 import com.datadog.appsec.dependency.DependencyServiceImpl;
 import com.datadog.appsec.event.EventDispatcher;
 import com.datadog.appsec.gateway.GatewayBridge;
 import com.datadog.appsec.gateway.RateLimiter;
-import com.datadog.appsec.telemetry.TelemetryRunnable;
 import com.datadog.appsec.util.AbortStartupException;
 import com.datadog.appsec.util.StandardizedLogging;
 import datadog.communication.ddagent.SharedCommunicationObjects;
@@ -16,6 +13,8 @@ import datadog.communication.fleet.FleetService;
 import datadog.communication.fleet.FleetServiceImpl;
 import datadog.communication.monitor.Counter;
 import datadog.communication.monitor.Monitoring;
+import datadog.telemetry.TelemetryRunnable;
+import datadog.telemetry.TelemetryServiceImpl;
 import datadog.trace.api.Config;
 import datadog.trace.api.gateway.SubscriptionService;
 import datadog.trace.api.time.SystemTimeSource;
@@ -28,6 +27,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class AppSecSystem {
+
+  private static final long TELEMETRY_STOP_WAIT_MILLIS = 5000L;
 
   private static final Logger log = LoggerFactory.getLogger(AppSecSystem.class);
   private static final AtomicBoolean STARTED = new AtomicBoolean();
@@ -69,18 +70,9 @@ public class AppSecSystem {
     APP_SEC_CONFIG_SERVICE.init(false);
 
     // TODO: Telemetry should be moved out of appsec
-    DependencyService dependencyService;
     if (instrumentation != null && config.isAppSecDependencies()) {
-      DependencyServiceImpl impl = new DependencyServiceImpl();
-      impl.installOn(instrumentation);
-      dependencyService = impl;
-    } else {
-      dependencyService = DependencyService.NOOP;
+      startTelemetry(instrumentation, sco);
     }
-    TELEMETRY_THREAD =
-        newAgentThread(
-            AgentThreadFactory.AgentThread.TELEMETRY, new TelemetryRunnable(dependencyService));
-    TELEMETRY_THREAD.start();
 
     EventDispatcher eventDispatcher = new EventDispatcher();
     sco.createRemaining(config);
@@ -102,6 +94,21 @@ public class AppSecSystem {
     log.info("AppSec has started with {}", startedAppSecModules);
   }
 
+  private static void startTelemetry(Instrumentation instrumentation, SharedCommunicationObjects sco) {
+    DependencyServiceImpl dependencyService = new DependencyServiceImpl();
+    dependencyService.installOn(instrumentation);
+
+    TelemetryServiceImpl telemetryService = new TelemetryServiceImpl(sco.agentUrl);
+
+    TelemetryRunnable telemetryRunnable = new TelemetryRunnable(
+        sco.okHttpClient, telemetryService,
+        Collections.singletonList(new DependencyPeriodicAction(dependencyService)));
+    TELEMETRY_THREAD =
+        AgentThreadFactory.newAgentThread(AgentThreadFactory.AgentThread.TELEMETRY,
+            telemetryRunnable);
+    TELEMETRY_THREAD.start();
+  }
+
   private static RateLimiter getRateLimiter(Config config, Monitoring monitoring) {
     RateLimiter rateLimiter = null;
     int appSecTraceRateLimit = config.getAppSecTraceRateLimit();
@@ -120,7 +127,17 @@ public class AppSecSystem {
     }
 
     APP_SEC_CONFIG_SERVICE.close();
-    TELEMETRY_THREAD.interrupt();
+    if (TELEMETRY_THREAD != null) {
+      TELEMETRY_THREAD.interrupt();
+      try {
+        TELEMETRY_THREAD.join(TELEMETRY_STOP_WAIT_MILLIS);
+      } catch (InterruptedException e) {
+        log.warn("Telemetry thread join was interrupted");
+      }
+      if (TELEMETRY_THREAD.isAlive()) {
+        log.warn("Telemetry thread join was not completed");
+      }
+    }
   }
 
   private static void loadModules(EventDispatcher eventDispatcher) {

@@ -54,6 +54,11 @@ public class DependencyServiceImpl implements DependencyService {
 
     List<Dependency> deps = new ArrayList<>(currentSet.size());
     for (URI uri : currentSet) {
+      if (Thread.interrupted()) {
+        log.warn("Interrupted while processing dependencies");
+        break;
+      }
+
       Dependency dep = identifyLibrary(uri);
       if (dep == null) {
         log.warn("unable to detect dependency for URI {}", uri);

@@ -2,12 +2,8 @@ buildscript {
   repositories {
     mavenCentral()
   }
-  dependencies {
-    classpath "org.openapitools:openapi-generator-gradle-plugin:5.4.0"
-  }
 }
 
-apply plugin: 'org.openapi.generator'
 apply from: "$rootDir/gradle/java.gradle"
 
 dependencies {
@@ -44,44 +40,3 @@ ext {
     'datadog.communication.fleet.FleetServiceImpl',]
   minJavaVersionForTests = JavaVersion.VERSION_1_7
 }
-
-openApiGenerate {
-  generatorName = "java"
-  inputSpec = "$projectDir/src/main/schemas/telemetry-api-v1.yaml".toString()
-  outputDir = "$buildDir/generated".toString()
-  modelPackage = "datadog.communication.telemetry.api"
-  // openApi generator doesn't support Moshi, so we're using custom template based on microprofile
-  templateDir = "$projectDir/templates".toString()
-
-  typeMappings = [
-    // Java representation of ambiguous types
-    "OneOfnumberbooleanstring": "Object", // number/boolean/string
-    "OneOfintegerdouble": "Number",       // integer/double
-    "integer": "Long"
-  ]
-  importMappings = [
-    // Java representation of ambiguous imports
-    'OneOfnumberbooleanstring': 'java.lang.Object',
-    'OneOfintegerdouble': 'java.lang.Number',
-  ]
-
-  configOptions = [
-    dateLibrary: "java8",
-    library: "microprofile",
-    openApiNullable: "false",
-    useOneOfInterfaces: "true",
-    legacyDiscriminatorBehavior: "false",
-  ]
-  globalProperties = [
-    // force generate only the models
-    apis: "false",
-    invokers: "false",
-    models: "",
-    modelDocs: "false",
-    modelTests: "false"
-  ]
-}
-
-compileJava.dependsOn tasks.openApiGenerate
-
-sourceSets.main.java.srcDirs += "$buildDir/generated/src/main/java"

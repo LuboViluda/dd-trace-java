@@ -1,6 +1,7 @@
-package datadog.communication.telemetry;
+package datadog.telemetry;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Queue;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -8,100 +9,92 @@ import okhttp3.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TelemetrySubmitterImpl implements Runnable {
+public class TelemetryRunnable implements Runnable {
+
+  public interface TelemetryPeriodicAction {
+    void doIteration(TelemetryService service);
+  }
+
   private static final double BACKOFF_INITIAL = 3.0d;
   private static final double BACKOFF_BASE = 3.0d;
   private static final double BACKOFF_MAX_EXPONENT = 3.0d;
 
-  private static final Logger log = LoggerFactory.getLogger(TelemetrySubmitterImpl.class);
+  private static final Logger log = LoggerFactory.getLogger(TelemetryRunnable.class);
 
   private final OkHttpClient okHttpClient;
-  private int consecutiveFailures;
+  private final TelemetryServiceImpl telemetryService;
   private final ThreadSleeper threadSleeper;
-  private final TelemetrySubmitter.Callback callback;
+  private final List<TelemetryPeriodicAction> actions;
 
-  public TelemetrySubmitterImpl(OkHttpClient okHttpClient, TelemetrySubmitter.Callback callback) {
+  private int consecutiveFailures;
+
+  public TelemetryRunnable(OkHttpClient okHttpClient,
+                           TelemetryServiceImpl telemetryService,
+                           List<TelemetryPeriodicAction> actions) {
     this.okHttpClient = okHttpClient;
-    this.callback = callback;
+    this.telemetryService = telemetryService;
     this.threadSleeper = new ThreadSleeper();
+    this.actions = actions;
   }
 
   @Override
   public void run() {
-    //      if (testingLatch != null) {
-    //        testingLatch.countDown();
-    //      }
+    log.info("Adding APP_STARTED telemetry event");
+    this.telemetryService.addStartedRequest();
+
     while (!Thread.interrupted()) {
       try {
         boolean success = mainLoopIteration();
-        //          if (testingLatch != null) {
-        //            testingLatch.countDown();
-        //          }
         if (success) {
           successWait();
         } else {
           failureWait();
         }
       } catch (InterruptedException e) {
-        log.info("Interrupted; exiting");
+        log.info("Interrupted; finishing telemetry thread");
         Thread.currentThread().interrupt();
       }
     }
+
+    log.info("Sending APP_CLOSING telemetry event");
+    sendRequest(this.telemetryService.appClosingRequest());
+    log.info("Telemetry thread finishing");
   }
 
   private boolean mainLoopIteration() throws InterruptedException {
-    Queue<Request> queue = callback.prepareRequests();
-    if (!queue.isEmpty()) {
-      Request request;
-      while ((request = queue.peek()) != null) {
-        if (!sendRequest(request)) {
-          return false;
-        }
-        // remove request from queue, in case of success submitting
-        queue.poll();
+    for (TelemetryPeriodicAction action : this.actions) {
+      action.doIteration(this.telemetryService);
+    }
+
+    Queue<Request> queue = telemetryService.prepareRequests();
+    Request request;
+    while ((request = queue.peek()) != null) {
+      if (!sendRequest(request)) {
+        return false;
       }
+      // remove request from queue, in case of success submitting
+      // we are the only consumer, so this is guaranteed to be the same we peeked
+      queue.poll();
     }
     return true;
   }
 
   private void successWait() {
     consecutiveFailures = 0;
-    int waitSeconds = 60;
+    int waitSeconds = 6;
     threadSleeper.sleep(waitSeconds * 1000L);
-    //      if (testingLatch != null && testingLatch.getCount() > 0) {
-    //        waitSeconds = 0;
-    //      }
-    //      try {
-    //      } catch (InterruptedException e) {
-    //        Thread.currentThread().interrupt();
-    //      }
   }
 
   private void failureWait() {
-    double waitSeconds;
     consecutiveFailures++;
-    waitSeconds =
-        BACKOFF_INITIAL
-            * Math.pow(
-                BACKOFF_BASE, Math.min((double) consecutiveFailures - 1, BACKOFF_MAX_EXPONENT));
-    //      if (testingLatch != null && testingLatch.getCount() > 0) {
-    //        waitSeconds = 0;
-    //      }
+    double waitSeconds = BACKOFF_INITIAL
+        * Math.pow(
+        BACKOFF_BASE, Math.min((double) consecutiveFailures - 1, BACKOFF_MAX_EXPONENT));
     log.warn(
         "Last attempt to send telemetry failed; " + "will retry in {} seconds (num failures: {})",
         waitSeconds,
         consecutiveFailures);
     threadSleeper.sleep((long) (waitSeconds * 1000L));
-    //      try {
-    //        Thread.sleep((long) (waitSeconds * 1000L));
-    //      } catch (InterruptedException e) {
-    //        Thread.currentThread().interrupt();
-    //      }
-  }
-
-  // Instantly send all queued request
-  public void flushNow() {
-    threadSleeper.awake();
   }
 
   private boolean sendRequest(Request request) {
@@ -123,25 +116,24 @@ public class TelemetrySubmitterImpl implements Runnable {
 
   private static class ThreadSleeper {
     private final Object monitor = new Object();
-    private boolean wasWoken = false;
+    private boolean wasAwoken = false;
 
     public void sleep(long timeout) {
       synchronized (monitor) {
-        if (!wasWoken) {
+        if (!wasAwoken) {
           try {
             monitor.wait(timeout);
           } catch (InterruptedException e) {
-            e.printStackTrace();
             Thread.currentThread().interrupt();
           }
         }
-        wasWoken = false;
+        wasAwoken = false;
       }
     }
 
-    public synchronized void awake() {
+    public void awake() {
       synchronized (monitor) {
-        wasWoken = true;
+        wasAwoken = true;
         monitor.notify();
       }
     }

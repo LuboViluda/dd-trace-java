@@ -1,11 +1,24 @@
-package datadog.communication.telemetry;
+package datadog.telemetry;
 
 import com.squareup.moshi.JsonAdapter;
+import com.squareup.moshi.JsonReader;
+import com.squareup.moshi.JsonWriter;
 import com.squareup.moshi.Moshi;
-import datadog.communication.telemetry.api.*;
+import com.squareup.moshi.Types;
+import datadog.telemetry.api.ApiVersion;
+import datadog.telemetry.api.Application;
+import datadog.telemetry.api.Host;
+import datadog.telemetry.api.Payload;
+import datadog.telemetry.api.RequestType;
+import datadog.telemetry.api.Telemetry;
 import datadog.trace.api.Config;
 import datadog.trace.api.Platform;
+import java.io.IOException;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Type;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.annotation.Nullable;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.Request;
@@ -20,7 +33,39 @@ public class RequestBuilder {
 
   private static final Logger log = LoggerFactory.getLogger(RequestBuilder.class);
   private static final JsonAdapter<Telemetry> JSON_ADAPTER =
-      new Moshi.Builder().build().adapter(Telemetry.class);
+      new Moshi.Builder().add(new JsonAdapter.Factory() {
+        @Nullable
+        @Override
+        public JsonAdapter<?> create(Type type, Set<? extends Annotation> annotations, final Moshi moshi) {
+          Class<?> rawType = Types.getRawType(type);
+          if (rawType != Payload.class) {
+            return null;
+          }
+
+          return new JsonAdapter<Payload>() {
+            @Override
+            public Payload fromJson(JsonReader reader) throws IOException {
+              return null;
+            }
+
+            @Override
+            public void toJson(JsonWriter writer, @Nullable Payload value) throws IOException {
+              if (value == null) {
+                writer.nullValue();
+                return;
+              }
+
+              Class<? extends Payload> actualClass = value.getClass();
+              if (actualClass == Payload.class) {
+                throw new RuntimeException("Tried to serialize generic payload");
+              }
+
+              JsonAdapter<? extends Payload> adapter = moshi.adapter(actualClass);
+              ((JsonAdapter<Payload>) adapter).toJson(writer, value);
+            }
+          };
+        }
+      }).build().adapter(Telemetry.class);
   private static final AtomicLong SEQ_ID = new AtomicLong();
   private final HttpUrl httpUrl;
   private final Application application;

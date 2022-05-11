@@ -1,0 +1,73 @@
+buildscript {
+  repositories {
+    mavenCentral()
+  }
+  dependencies {
+    classpath "org.openapitools:openapi-generator-gradle-plugin:5.4.0"
+  }
+}
+
+apply plugin: 'org.openapi.generator'
+apply from: "$rootDir/gradle/java.gradle"
+
+dependencies {
+  implementation deps.slf4j
+
+  implementation project(':internal-api')
+  implementation project(':communication')
+
+  api deps.okhttp
+  api deps.moshi
+
+  testImplementation project(':utils:test-utils')
+}
+
+ext {
+  minimumBranchCoverage = 0.6
+  minimumInstructionCoverage = 0.8
+  excludedClassesCoverage = [
+  ]
+  excludedClassesBranchCoverage = []
+  excludedClassesInstructionCoverage = []
+  minJavaVersionForTests = JavaVersion.VERSION_1_7
+}
+
+openApiGenerate {
+  generatorName = 'java'
+  inputSpec = "$projectDir/src/main/schemas/telemetry-api-v1.yaml"
+  outputDir = "$buildDir/generated"
+  modelPackage = "datadog.telemetry.api"
+  templateDir = "$projectDir/src/main/templates"
+
+  typeMappings = [
+    // Java representation of ambiguous types
+    "OneOfnumberbooleanstring": "Object", // number/boolean/string
+    "OneOfintegerdouble": "Number",       // integer/double
+    "integer": "Long"
+  ]
+  importMappings = [
+    // Java representation of ambiguous imports
+    'OneOfnumberbooleanstring': 'java.lang.Object',
+    'OneOfintegerdouble': 'java.lang.Number',
+  ]
+
+  configOptions = [
+    dateLibrary: 'leggacy',
+    library: 'microprofile',
+    openApiNullable: 'false',
+    useOneOfInterfaces: 'true',
+    legacyDiscriminatorBehavior: 'false',
+  ]
+  globalProperties = [
+    // force generate only the models
+    apis: 'false',
+    invokers: 'false',
+    models: '',
+    modelDocs: 'false',
+    modelTests: 'false'
+  ]
+}
+
+compileJava.dependsOn tasks.openApiGenerate
+
+sourceSets.main.java.srcDirs += "$buildDir/generated/src/main/java"

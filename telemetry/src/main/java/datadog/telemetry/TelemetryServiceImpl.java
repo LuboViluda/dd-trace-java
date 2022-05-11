@@ -1,20 +1,27 @@
-package datadog.communication.telemetry;
+package datadog.telemetry;
 
-import datadog.communication.ddagent.SharedCommunicationObjects;
-import datadog.communication.telemetry.api.*;
-import datadog.trace.util.AgentThreadFactory;
-import java.io.IOException;
+import datadog.telemetry.api.AppDependenciesLoaded;
+import datadog.telemetry.api.AppIntegrationsChange;
+import datadog.telemetry.api.AppStarted;
+import datadog.telemetry.api.Dependency;
+import datadog.telemetry.api.GenerateMetrics;
+import datadog.telemetry.api.Integration;
+import datadog.telemetry.api.KeyValue;
+import datadog.telemetry.api.Metric;
+import datadog.telemetry.api.Payload;
+import datadog.telemetry.api.RequestType;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import okhttp3.*;
+import okhttp3.HttpUrl;
+import okhttp3.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TelemetryServiceImpl implements TelemetryService, TelemetrySubmitter.Callback {
+public class TelemetryServiceImpl implements TelemetryService {
 
   private static final String API_ENDPOINT = "/telemetry/proxy/api/v2/apmtelemetry";
   private static final int HEARTBEAT_INTERVAL = 60 * 1000; // milliseconds
@@ -30,53 +37,29 @@ public class TelemetryServiceImpl implements TelemetryService, TelemetrySubmitte
       new LinkedBlockingQueue<>(1024); // recommended capacity?
 
   private final Queue<Request> queue = new ArrayBlockingQueue<>(16);
-  private final TelemetrySubmitterImpl submitter;
-  private final Thread thread;
-  private long lastHeartbeatTimestamp;
 
-  public TelemetryServiceImpl(
-      SharedCommunicationObjects sco, AgentThreadFactory agentThreadFactory) {
-    HttpUrl httpUrl = sco.agentUrl.newBuilder().addPathSegments(API_ENDPOINT).build();
+  private long lastPreparationTimestamp;
+
+  public TelemetryServiceImpl(HttpUrl agentUrl) {
+//    HttpUrl httpUrl = agentUrl.newBuilder().addPathSegments(API_ENDPOINT).build();
+    HttpUrl httpUrl = HttpUrl.parse("http://127.0.0.1:12345");
     this.requestBuilder = new RequestBuilder(httpUrl);
-    this.submitter = new TelemetrySubmitterImpl(sco.okHttpClient, this);
-    this.thread = agentThreadFactory.newThread(submitter);
   }
 
   @Override
-  public void init() {
-    thread.start();
-  }
-
-  @Override
-  public void close() throws IOException {
-    this.thread.interrupt();
-    try {
-      this.thread.join(5000);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.warn("Interrupted waiting for thread " + this.thread.getName() + "to join");
-    }
-  }
-
-  @Override
-  public void appStarted() {
+  public void addStartedRequest() {
     Payload payload =
         new AppStarted()
             ._configuration(drainOrNull(configurations))
             .integrations(drainOrNull(integrations))
             .dependencies(drainOrNull(dependencies));
 
-    Request request = requestBuilder.build(RequestType.APP_STARTED, payload);
-    queue.offer(request);
+    queue.offer(requestBuilder.build(RequestType.APP_STARTED, payload));
   }
 
   @Override
-  public void appClosing() {
-    Request request = requestBuilder.build(RequestType.APP_CLOSING);
-    if (queue.offer(request)) {
-      // try to send app closing message instantly before process terminated
-      submitter.flushNow();
-    }
+  public Request appClosingRequest() {
+    return requestBuilder.build(RequestType.APP_CLOSING);
   }
 
   @Override
@@ -99,8 +82,7 @@ public class TelemetryServiceImpl implements TelemetryService, TelemetrySubmitte
     return this.metrics.offer(metric);
   }
 
-  @Override
-  public Queue<Request> prepareRequests() {
+  Queue<Request> prepareRequests() {
     // New integrations
     if (!integrations.isEmpty()) {
       Payload payload = new AppIntegrationsChange().integrations(drainOrNull(integrations));
@@ -127,17 +109,18 @@ public class TelemetryServiceImpl implements TelemetryService, TelemetrySubmitte
       queue.offer(request);
     }
 
-    // Heartbeat request if need
-    if (System.currentTimeMillis() - lastHeartbeatTimestamp > HEARTBEAT_INTERVAL) {
+    // Heartbeat request if needed
+    long curTime = System.currentTimeMillis();
+    if (queue.isEmpty() && curTime - lastPreparationTimestamp > HEARTBEAT_INTERVAL) {
       Request request = requestBuilder.build(RequestType.APP_HEARTBEAT);
       queue.offer(request);
-      lastHeartbeatTimestamp = System.currentTimeMillis();
     }
+    lastPreparationTimestamp = curTime;
 
     return queue;
   }
 
-  private <T> List<T> drainOrNull(BlockingQueue<T> srcQueue) {
+  private static <T> List<T> drainOrNull(BlockingQueue<T> srcQueue) {
     List<T> list = new LinkedList<>();
     int drained = srcQueue.drainTo(list);
     if (drained > 0) {
