@@ -81,7 +81,7 @@ public class TelemetryRunnable implements Runnable {
 
   private void successWait() {
     consecutiveFailures = 0;
-    int waitSeconds = 6;
+    int waitSeconds = 10;
     threadSleeper.sleep(waitSeconds * 1000L);
   }
 

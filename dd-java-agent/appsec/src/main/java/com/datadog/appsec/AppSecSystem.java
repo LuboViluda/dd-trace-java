@@ -13,6 +13,7 @@ import datadog.communication.fleet.FleetService;
 import datadog.communication.fleet.FleetServiceImpl;
 import datadog.communication.monitor.Counter;
 import datadog.communication.monitor.Monitoring;
+import datadog.telemetry.RequestBuilder;
 import datadog.telemetry.TelemetryRunnable;
 import datadog.telemetry.TelemetryServiceImpl;
 import datadog.trace.api.Config;
@@ -23,6 +24,8 @@ import datadog.trace.util.Strings;
 import java.lang.instrument.Instrumentation;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import okhttp3.HttpUrl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,7 +101,10 @@ public class AppSecSystem {
     DependencyServiceImpl dependencyService = new DependencyServiceImpl();
     dependencyService.installOn(instrumentation);
 
-    TelemetryServiceImpl telemetryService = new TelemetryServiceImpl(sco.agentUrl);
+//    RequestBuilder requestBuilder = new RequestBuilder(sco.agentUrl);
+    RequestBuilder requestBuilder = new RequestBuilder(HttpUrl.get("http://127.0.0.1:12345"));
+    TelemetryServiceImpl telemetryService =
+        new TelemetryServiceImpl(requestBuilder, SystemTimeSource.INSTANCE);
 
     TelemetryRunnable telemetryRunnable = new TelemetryRunnable(
         sco.okHttpClient, telemetryService,

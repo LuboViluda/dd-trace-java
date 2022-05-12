@@ -1,10 +1,7 @@
 package datadog.telemetry;
 
 import com.squareup.moshi.JsonAdapter;
-import com.squareup.moshi.JsonReader;
-import com.squareup.moshi.JsonWriter;
 import com.squareup.moshi.Moshi;
-import com.squareup.moshi.Types;
 import datadog.telemetry.api.ApiVersion;
 import datadog.telemetry.api.Application;
 import datadog.telemetry.api.Host;
@@ -13,12 +10,20 @@ import datadog.telemetry.api.RequestType;
 import datadog.telemetry.api.Telemetry;
 import datadog.trace.api.Config;
 import datadog.trace.api.Platform;
+
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.lang.annotation.Annotation;
-import java.lang.reflect.Type;
-import java.util.Set;
+import java.io.InputStreamReader;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-import javax.annotation.Nullable;
+
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
 import okhttp3.Request;
@@ -28,61 +33,40 @@ import org.slf4j.LoggerFactory;
 
 public class RequestBuilder {
 
+  private static final String API_ENDPOINT = "/telemetry/proxy/api/v2/apmtelemetry";
+
   private static final ApiVersion API_VERSION = ApiVersion.V1;
   private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
 
   private static final Logger log = LoggerFactory.getLogger(RequestBuilder.class);
+
   private static final JsonAdapter<Telemetry> JSON_ADAPTER =
-      new Moshi.Builder().add(new JsonAdapter.Factory() {
-        @Nullable
-        @Override
-        public JsonAdapter<?> create(Type type, Set<? extends Annotation> annotations, final Moshi moshi) {
-          Class<?> rawType = Types.getRawType(type);
-          if (rawType != Payload.class) {
-            return null;
-          }
-
-          return new JsonAdapter<Payload>() {
-            @Override
-            public Payload fromJson(JsonReader reader) throws IOException {
-              return null;
-            }
-
-            @Override
-            public void toJson(JsonWriter writer, @Nullable Payload value) throws IOException {
-              if (value == null) {
-                writer.nullValue();
-                return;
-              }
-
-              Class<? extends Payload> actualClass = value.getClass();
-              if (actualClass == Payload.class) {
-                throw new RuntimeException("Tried to serialize generic payload");
-              }
-
-              JsonAdapter<? extends Payload> adapter = moshi.adapter(actualClass);
-              ((JsonAdapter<Payload>) adapter).toJson(writer, value);
-            }
-          };
-        }
-      }).build().adapter(Telemetry.class);
+      new Moshi.Builder()
+          .add(new PolymorphicAdapterFactory(Payload.class))
+          .build().adapter(Telemetry.class);
+  private static final String AGENT_VERSION;
   private static final AtomicLong SEQ_ID = new AtomicLong();
+
   private final HttpUrl httpUrl;
   private final Application application;
   private final Host host;
   private final String runtimeId;
 
-  public RequestBuilder(HttpUrl httpUrl) {
-    this.httpUrl = httpUrl;
-    Config config = Config.get();
+  static {
+    String tracerVersion = "0.0.0";
+    try {
+      tracerVersion = getAgentVersion();
+    } catch (Throwable t) {
+      log.error("Unable to get tracer version ", t);
+    }
 
-    String tracerVersion = "0.100.0";
-    // TODO: retrieve tracer version
-    //    try {
-    //      tracerVersion = AgentJar.getAgentVersion();
-    //    } catch (IOException e) {
-    //      log.error("Unable to get tracer version ", e);
-    //    }
+    AGENT_VERSION = tracerVersion;
+  }
+
+  public RequestBuilder(HttpUrl httpUrl) {
+    this.httpUrl = httpUrl.newBuilder().addPathSegments(API_ENDPOINT).build();
+
+    Config config = Config.get();
 
     this.runtimeId = config.getRuntimeId();
     this.application =
@@ -90,25 +74,21 @@ public class RequestBuilder {
             .env(config.getEnv())
             .serviceName(config.getServiceName())
             .serviceVersion(config.getVersion())
-            .tracerVersion(tracerVersion)
+            .tracerVersion(AGENT_VERSION)
             .languageName("jvm")
             .languageVersion(Platform.getLangVersion())
             .runtimeName(Platform.getRuntimeVendor())
             .runtimeVersion(Platform.getRuntimeVersion())
-            .runtimePatches(Platform.getRuntimePatches())
-            // TODO: get list of products appsec, profiler, etc.
-            // .products()
-    ;
+            .runtimePatches(Platform.getRuntimePatches());
+
     this.host = new Host()
-        // TODO: retrieve host information
-        // .hostname("")
+         .hostname(HostnameGuessing.getHostname())
+        .os(System.getProperty("os.name", "(unknown)"))
+        .osVersion(System.getProperty("os.version", "(unknown)"));
         // .containerId("")
-        // .os("")
-        // .osVersion("")
         // .kernelName("")
         // .kernelRelease("")
         // .kernelVersion("")
-    ;
   }
 
   public Request build(RequestType requestType) {
@@ -123,7 +103,6 @@ public class RequestBuilder {
             .tracerTime(System.currentTimeMillis() / 1000L)
             .runtimeId(runtimeId)
             .seqId(SEQ_ID.incrementAndGet())
-            // .debug()
             .application(application)
             .host(host)
             .payload(payload);
@@ -133,12 +112,77 @@ public class RequestBuilder {
 
     return new Request.Builder()
         .url(httpUrl)
-        // calculated by OkHttp?
-        // .addHeader("Content-Type", "application/json")
-        // .addHeader("Content-Length", body.contentLength())
+        .addHeader("Content-Type", "application/json")
         .addHeader("DD-Telemetry-API-Version", API_VERSION.toString())
         .addHeader("DD-Telemetry-Request-Type", requestType.toString())
         .post(body)
         .build();
+  }
+
+  private static String getAgentVersion() throws IOException {
+    final StringBuilder sb = new StringBuilder(32);
+    ClassLoader cl = ClassLoader.getSystemClassLoader();
+    try (final BufferedReader reader =
+             new BufferedReader(
+                 new InputStreamReader(
+                     cl.getResourceAsStream("dd-java-agent.version"), StandardCharsets.ISO_8859_1))) {
+      for (int c = reader.read(); c != -1; c = reader.read()) {
+        sb.append((char) c);
+      }
+    }
+
+    return sb.toString().trim();
+  }
+}
+
+class HostnameGuessing {
+  private static final Path PROC_HOSTNAME = FileSystems.getDefault().getPath("/proc/sys/kernel/hostname");
+  private static final Path ETC_HOSTNAME = FileSystems.getDefault().getPath("/etc/hostname");
+  private static final List<Path> HOSTNAME_FILES = Arrays.asList(PROC_HOSTNAME, ETC_HOSTNAME);
+
+  private static final Logger log = LoggerFactory.getLogger(RequestBuilder.class);
+
+  public static String getHostname() {
+    String hostname = null;
+    for (Path file: HOSTNAME_FILES) {
+      hostname = tryReadFile(file);
+      if (null != hostname) {
+        break;
+      }
+    }
+
+    if (hostname == null) {
+      try {
+        hostname = getHostNameFromLocalHost();
+      } catch (UnknownHostException e) {
+        // purposefully left empty
+      }
+    }
+
+    if (hostname != null) {
+      hostname = hostname.trim();
+    } else {
+      log.warn("Could not determine hostname");
+      hostname = "";
+    }
+
+    return hostname;
+  }
+
+  private static String getHostNameFromLocalHost() throws UnknownHostException {
+    return InetAddress.getLocalHost().getHostName();
+  }
+
+  private static String tryReadFile(Path file) {
+    String content = null;
+    if (Files.isRegularFile(file)) {
+      try {
+        byte[] bytes = Files.readAllBytes(file);
+        content = new String(bytes, StandardCharsets.ISO_8859_1);
+      } catch (IOException e) {
+        log.debug("Could not read {}", file, e);
+      }
+    }
+    return content;
   }
 }

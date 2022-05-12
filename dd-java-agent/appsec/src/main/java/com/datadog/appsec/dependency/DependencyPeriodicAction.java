@@ -2,6 +2,8 @@ package com.datadog.appsec.dependency;
 
 import datadog.telemetry.TelemetryRunnable;
 import datadog.telemetry.TelemetryService;
+import datadog.telemetry.api.DependencyType;
+
 import java.util.Collection;
 
 public class DependencyPeriodicAction implements TelemetryRunnable.TelemetryPeriodicAction {
@@ -19,6 +21,7 @@ public class DependencyPeriodicAction implements TelemetryRunnable.TelemetryPeri
       telDep.setHash(dep.getHash());
       telDep.setName(dep.getName());
       telDep.setVersion(dep.getVersion());
+      telDep.setType(DependencyType.PLATFORMSTANDARD);
       telService.addDependency(telDep);
     }
   }

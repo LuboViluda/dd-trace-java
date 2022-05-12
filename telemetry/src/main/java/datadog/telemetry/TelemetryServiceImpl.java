@@ -16,19 +16,20 @@ import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
-import okhttp3.HttpUrl;
+
+import datadog.trace.api.time.TimeSource;
 import okhttp3.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class TelemetryServiceImpl implements TelemetryService {
 
-  private static final String API_ENDPOINT = "/telemetry/proxy/api/v2/apmtelemetry";
-  private static final int HEARTBEAT_INTERVAL = 60 * 1000; // milliseconds
+  private static final int HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
   private static final Logger log = LoggerFactory.getLogger(TelemetryServiceImpl.class);
 
   private final RequestBuilder requestBuilder;
+  private final TimeSource timeSource;
 
   private final BlockingQueue<KeyValue> configurations = new LinkedBlockingQueue<>();
   private final BlockingQueue<Integration> integrations = new LinkedBlockingQueue<>();
@@ -40,10 +41,9 @@ public class TelemetryServiceImpl implements TelemetryService {
 
   private long lastPreparationTimestamp;
 
-  public TelemetryServiceImpl(HttpUrl agentUrl) {
-//    HttpUrl httpUrl = agentUrl.newBuilder().addPathSegments(API_ENDPOINT).build();
-    HttpUrl httpUrl = HttpUrl.parse("http://127.0.0.1:12345");
-    this.requestBuilder = new RequestBuilder(httpUrl);
+  public TelemetryServiceImpl(RequestBuilder requestBuilder, TimeSource timeSource) {
+    this.requestBuilder = requestBuilder;
+    this.timeSource = timeSource;
   }
 
   @Override
@@ -103,19 +103,22 @@ public class TelemetryServiceImpl implements TelemetryService {
           new GenerateMetrics()
               .namespace("appsec")
               .libLanguage("java")
-              .libVersion("0.100.0")
+              .libVersion("0.0.0")
               .series(drainOrNull(metrics));
       Request request = requestBuilder.build(RequestType.GENERATE_METRICS, payload);
       queue.offer(request);
     }
 
     // Heartbeat request if needed
-    long curTime = System.currentTimeMillis();
-    if (queue.isEmpty() && curTime - lastPreparationTimestamp > HEARTBEAT_INTERVAL) {
+    long curTime = this.timeSource.getCurrentTimeMillis();
+    if (!queue.isEmpty()) {
+      lastPreparationTimestamp = curTime;
+    }
+    if (curTime - lastPreparationTimestamp > HEARTBEAT_INTERVAL_MS) {
       Request request = requestBuilder.build(RequestType.APP_HEARTBEAT);
       queue.offer(request);
+      lastPreparationTimestamp = curTime;
     }
-    lastPreparationTimestamp = curTime;
 
     return queue;
   }

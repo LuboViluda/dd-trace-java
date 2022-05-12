@@ -61,7 +61,12 @@ public class DependencyServiceImpl implements DependencyService {
 
       Dependency dep = identifyLibrary(uri);
       if (dep == null) {
-        log.warn("unable to detect dependency for URI {}", uri);
+        if ("jrt".equals(uri.getScheme()) ||
+            "x-internal-jar".equals(uri.getScheme())) {
+          log.debug("unable to detect dependency for URI {}", uri);
+        } else {
+          log.warn("unable to detect dependency for URI {}", uri);
+        }
         continue;
       }
       if (log.isDebugEnabled()) {
